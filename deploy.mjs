@@ -26,13 +26,12 @@ const komodo = KomodoClient(process.env.KOMODO_URL, {
     },
 });
 
-const deploymentType = process.env.DEPLOYMENT_TYPE || "deployment";
+const deploymentType = "deployment";
 const baseName = process.env.DOCKER_IMAGEBASENAME;
 const branchName = branchFromArgs || process.env.BRANCH_NAME || "dev";
 const repoName = process.env.REPO_NAME;
 const serverIdDeploy = process.env.KOMODO_SERVER_ID_DEPLOY;
 const serverIdBuild = process.env.KOMODO_SERVER_ID_BUILD;
-const builderId = process.env.KOMODO_BUILDER_ID;
 const dockerImage = process.env.DOCKER_IMAGE;
 const dockerBuildArgs = dockerEnvVars.map((env) => `${env.variable}=${env.value}`).join(" ");
 const dockerRegistry = process.env.DOCKER_REGISTRY;
@@ -66,7 +65,6 @@ console.log(`   Branch Name: ${branchName}`);
 console.log(`   Repo Name: ${repoName}`);
 console.log(`   Server ID Deploy: ${serverIdDeploy || "NOT SET"}`);
 console.log(`   Server ID Build: ${serverIdBuild || "NOT SET"}`);
-console.log(`   Builder ID: ${builderId}`);
 console.log(`   Docker Registry: ${dockerRegistry}`);
 console.log(`   Docker Username: ${dockerUsername}`);
 console.log(`   Git Account: ${gitAccount}`);
@@ -88,7 +86,6 @@ if (!process.env.KOMODO_API_SECRET) {
 
 // Create branch-specific names
 const branchSuffix = branchName.replace(/[^a-zA-Z0-9-]/g, "-").toLowerCase();
-const stackName = `${baseName}-${branchSuffix}`;
 const deploymentName = `${baseName}-${branchSuffix}`;
 
 // Create Docker-safe tag (lowercase, no special chars except dash)
@@ -105,7 +102,6 @@ const branchHash = branchSuffix.split("").reduce((a, b) => {
 }, 0);
 const hostPort = 3000 + Math.abs(branchHash % 1000);
 
-console.log(`   Generated Stack Name: ${stackName}`);
 console.log(`   Generated Host Port: ${hostPort}`);
 console.log(`   Generated Deployment Name: ${deploymentName}`);
 console.log(`   Generated Docker Tag: ${dockerTag}`);
@@ -115,11 +111,11 @@ async function writeDeploymentInfo(deploymentInfo, isFailure = false) {
     const { writeFileSync, existsSync } = await import("fs");
     const { dirname } = await import("path");
     const filePath = "/app/workspace/deployment-info.json";
-    
+
     // Check if base folder exists, if not write to current directory
     const baseDir = dirname(filePath);
     let finalFilePath = filePath;
-    
+
     try {
         if (!existsSync(baseDir)) {
             console.log(`📁 Base directory ${baseDir} doesn't exist, writing to current directory instead`);
@@ -473,101 +469,20 @@ try {
         console.log(`   Server ID: ${serverIdDeploy}`);
         console.log(`   Deployment Name: ${deploymentName}`);
         console.log(`   Access URL: https://${hostPort}.${pangolinDomain}`);
-    } else if (deploymentType === "stack" || deploymentType === "repo-then-stack") {
-        console.log(`📋 Checking if stack '${stackName}' exists...`);
-
-        // Check if stack already exists and delete it to recreate with correct image path
-        const existingStack = stacks.find((s) => s.name === stackName);
-
-        if (existingStack) {
-            console.log(`🗑️  Deleting existing stack to recreate with correct image path...`);
-            await komodo.write("DeleteStack", { id: existingStack.id });
-            console.log(`✅ Stack deleted, will recreate`);
-        }
-
-        // Create stack (always create since we delete existing ones)
-        {
-            console.log(`🏗️  Creating new stack: ${stackName}`);
-            const newStack = await komodo.write("CreateStack", {
-                name: stackName,
-                config: {
-                    server_id: serverIdDeploy,
-                    project_name: stackName,
-                    file_contents: `services:
-  ${stackName}:
-    container_name: ${stackName}
-    image: ${dockerRegistry}/${dockerUsername}/${baseName}:latest-${dockerTag}
-    restart: unless-stopped
-    ports:
-      - '127.0.0.1:${hostPort}:3000'
-    environment:
-${generateYamlEnvSection(dockerEnvVars, branchName)}`,
-                    environment:
-                        dockerEnvVars.map((env) => `${env.variable}=${env.value}`).join("\n") +
-                        `\nBRANCH=${branchName}`,
-                },
-            });
-            console.log(`✅ Stack created with ID: ${newStack._id}`);
-        }
-
-        // Deploy repository if specified
-        if (repoName && (deploymentType === "repo-then-stack" || deploymentType === "repo")) {
-            console.log(`📦 Pulling repository: ${repoName}`);
-            const pullUpdate = await komodo.execute("PullRepo", { repo: repoName });
-            console.log(`✅ Repository pull initiated: ${pullUpdate.id}`);
-        }
-
-        // Deploy the stack
-        console.log(`🚀 Deploying stack: ${stackName}`);
-        const deployUpdate = await komodo.execute("DeployStack", { stack: stackName });
-        console.log(`✅ Stack deployment initiated: ${deployUpdate.id}`);
-    }
-
-    if (deploymentType === "container") {
-        console.log(`📋 Checking if deployment '${deploymentName}' exists...`);
-
-        // Check if deployment already exists
-        const deployments = await komodo.read("ListDeployments", {});
-        const existingDeployment = deployments.find((d) => d.name === deploymentName);
-
-        if (!existingDeployment) {
-            console.log(`🏗️  Creating new deployment: ${deploymentName}`);
-            const newDeployment = await komodo.write("CreateDeployment", {
-                name: deploymentName,
-                config: {
-                    server_id: serverIdDeploy,
-                    image: {
-                        type: "Image",
-                        params: { image: `${baseName}:${branchName}` },
-                    },
-                    network: "host",
-                    restart: "unless-stopped",
-                    environment: `BRANCH=${branchName}\nNODE_ENV=development\nPORT=3001`,
-                    ports: "3001:3000",
-                    auto_update: true,
-                    poll_for_updates: true,
-                },
-            });
-            console.log(`✅ Deployment created with ID: ${newDeployment._id}`);
-        } else {
-            console.log(`📦 Deployment '${deploymentName}' already exists`);
-        }
-
-        // Deploy the container
-        console.log(`🚀 Deploying container: ${deploymentName}`);
-        const deployUpdate = await komodo.execute("Deploy", { deployment: deploymentName });
-        console.log(`✅ Container deployment initiated: ${deployUpdate.id}`);
+    } else if (deploymentType === "stack") {
+        console.log(`Not implemented yet: Stack deployment type`);
+        throw new Error(`Stack deployment type is not implemented yet`);
     }
 
     console.log(`🎉 Deployment completed successfully!`);
-    console.log(`📝 Resource name: ${deploymentType === "container" ? deploymentName : stackName}`);
+    console.log(`📝 Resource name: ${deploymentName}`);
 
     // Write deployment info for GitHub Actions to read
     const deploymentInfo = {
         success: true,
         branch: branchName,
         hostPort: hostPort,
-        resourceName: deploymentType === "container" ? deploymentName : stackName,
+        resourceName: deploymentName,
         imageTag: dockerTag,
         deploymentType: deploymentType,
     };
