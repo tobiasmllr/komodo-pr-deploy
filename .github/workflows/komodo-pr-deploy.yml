@@ -1,0 +1,251 @@
+name: Build and Deploy via Komodo
+
+on:
+    pull_request:
+        branches: [main, dev]
+    workflow_dispatch:
+        inputs:
+            branch:
+                description: "Branch to deploy"
+                required: true
+                default: "dev"
+                type: string
+
+permissions:
+    contents: read
+    deployments: write
+    statuses: write
+    pull-requests: write
+
+jobs:
+    deploy:
+        if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.ref != 'main' && github.event.pull_request.head.ref != 'dev') }}
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.branch || github.head_ref || github.ref_name }}
+
+            - name: Log in to Container Registry
+              uses: docker/login-action@v2
+              with:
+                  registry: ${{ secrets.DOCKER_REGISTRY }}
+                  username: ${{ secrets.DOCKER_USERNAME }}
+                  password: ${{ secrets.DOCKER_PASSWORD }}
+
+            - name: Create GitHub deployment
+              uses: actions/github-script@v7
+              id: deployment
+              with:
+                  script: |
+                      const branchName = '${{ inputs.branch || github.head_ref || github.ref_name }}';
+                      const deployment = await github.rest.repos.createDeployment({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        ref: branchName,
+                        environment: branchName,
+                        description: `Deploy ${branchName} branch to Komodo`,
+                        auto_merge: false,
+                        required_contexts: []
+                      });
+                      console.log('Deployment created:', deployment.data.id);
+                      return deployment.data.id;
+
+            - name: Build and Deploy via Komodo
+              run: |
+                  BRANCH_NAME="${{ inputs.branch || github.head_ref || github.ref_name }}"
+                  DOCKER_TAG=$(echo "${BRANCH_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/^-\+\|-\+$//g' | sed 's/-\+/-/g')
+                  IMAGE_URL="${{ secrets.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/${{ secrets.DOCKER_IMAGEBASENAME }}:latest-${DOCKER_TAG}"
+
+                  echo "DOCKER_TAG=${DOCKER_TAG}" >> $GITHUB_ENV
+                  echo "IMAGE_URL=${IMAGE_URL}" >> $GITHUB_ENV
+
+                  echo "🔨 Building and deploying via Komodo: ${IMAGE_URL}"
+                  docker run --rm \
+                    -v $(pwd):/app/workspace \
+                    -w /app/workspace \
+                    -e NODE_PATH=/app/node_modules \
+                    -e KOMODO_URL="${{ secrets.KOMODO_URL }}" \
+                    -e KOMODO_API_KEY="${{ secrets.KOMODO_API_KEY }}" \
+                    -e KOMODO_API_SECRET="${{ secrets.KOMODO_API_SECRET }}" \
+                    -e KOMODO_SERVER_ID_BUILD="${{ secrets.KOMODO_SERVER_ID_BUILD }}" \
+                    -e KOMODO_SERVER_ID_DEPLOY="${{ secrets.KOMODO_SERVER_ID_DEPLOY }}" \
+                    -e DOCKER_REGISTRY="${{ secrets.DOCKER_REGISTRY }}" \
+                    -e DOCKER_USERNAME="${{ secrets.DOCKER_USERNAME }}" \
+                    -e GIT_ACCOUNT="${{ github.repository_owner }}" \
+                    -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+                    -e DOCKER_IMAGEBASENAME="${{ secrets.DOCKER_IMAGEBASENAME }}" \
+                    -e PANGOLIN_DOMAIN_ID="${{ secrets.PANGOLIN_DOMAIN_ID }}" \
+                    -e REPO_NAME="${{ github.repository }}" \
+                    ${{ secrets.DOCKER_REGISTRY }}/komodo-cli:latest \
+                    node deploy.mjs ${{ inputs.branch || github.head_ref || github.ref_name }} --build
+
+            - name: Create Pangolin DNS mapping
+              if: success()
+              run: |
+                  if [ ! -f "deployment-info.json" ]; then
+                      echo "❌ No deployment info found"
+                      exit 1
+                  fi
+
+                  SUCCESS=$(cat deployment-info.json | jq -r '.success' 2>/dev/null || echo "false")
+                  HOST_PORT=$(cat deployment-info.json | jq -r '.hostPort' 2>/dev/null || echo "")
+
+                  if [ "$SUCCESS" != "true" ] || [ -z "$HOST_PORT" ]; then
+                      echo "❌ Deployment was not successful or missing port info"
+                      exit 1
+                  fi
+
+                  echo "🌐 Creating DNS mapping for ${HOST_PORT}.${{ secrets.PANGOLIN_DOMAIN_ID }}"
+
+                  BRANCH_NAME="${{ inputs.branch || github.head_ref || github.ref_name }}"
+                  RESOURCE_NAME="${{ secrets.DOCKER_IMAGEBASENAME }}-$(echo "${BRANCH_NAME}" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]')"
+
+                  # Get numeric site ID
+                  SITE_RESPONSE=$(curl -s -k -w "HTTP_STATUS:%{http_code}" \
+                      -H "Authorization: Bearer ${{ secrets.PANGOLIN_API_TOKEN }}" \
+                      "${{ secrets.PANGOLIN_URL }}/v1/org/${{ secrets.PANGOLIN_ORG_ID }}/site/${{ secrets.PANGOLIN_SITE_ID }}")
+
+                  SITE_STATUS=$(echo "$SITE_RESPONSE" | tr -d '\n' | sed -E 's/.*HTTP_STATUS:([0-9]{3})$/\1/')
+                  if [ "$SITE_STATUS" -ne 200 ]; then
+                      echo "❌ Failed to get site info (HTTP ${SITE_STATUS})"
+                      exit 1
+                  fi
+
+                  NUMERIC_SITE_ID=$(echo "$SITE_RESPONSE" | sed -E 's/HTTP_STATUS\:[0-9]{3}$//' | grep -o '"siteId":[0-9]*' | cut -d':' -f2)
+
+                  # Get domain ID
+                  DOMAINS_RESPONSE=$(curl -s -k -w "HTTP_STATUS:%{http_code}" \
+                      -H "Authorization: Bearer ${{ secrets.PANGOLIN_API_TOKEN }}" \
+                      "${{ secrets.PANGOLIN_URL }}/v1/org/${{ secrets.PANGOLIN_ORG_ID }}/domains?limit=1000&offset=0")
+
+                  DOMAINS_STATUS=$(echo "$DOMAINS_RESPONSE" | tr -d '\n' | sed -E 's/.*HTTP_STATUS:([0-9]{3})$/\1/')
+                  if [ "$DOMAINS_STATUS" -ne 200 ]; then
+                      echo "❌ Failed to get domains list (HTTP ${DOMAINS_STATUS})"
+                      exit 1
+                  fi
+
+                  DOMAIN_ID=$(echo "$DOMAINS_RESPONSE" | sed -E 's/HTTP_STATUS\:[0-9]{3}$//' | grep -o "\"domainId\":\"[^\"]*\",\"baseDomain\":\"${{ secrets.PANGOLIN_DOMAIN_ID }}\"" | head -1 | grep -o '"domainId":"[^"]*"' | cut -d'"' -f4)
+
+                  if [ -z "$DOMAIN_ID" ]; then
+                      echo "❌ Domain '${{ secrets.PANGOLIN_DOMAIN_ID }}' not found"
+                      exit 1
+                  fi
+
+                  # Create TCP resource
+                  HTTP_RESPONSE=$(curl -s -k -w "HTTP_STATUS:%{http_code}" \
+                      -X PUT \
+                      -H "Content-Type: application/json" \
+                      -H "Authorization: Bearer ${{ secrets.PANGOLIN_API_TOKEN }}" \
+                      "${{ secrets.PANGOLIN_URL }}/v1/org/${{ secrets.PANGOLIN_ORG_ID }}/site/${NUMERIC_SITE_ID}/resource" \
+                      -d "{
+                          \"name\": \"${RESOURCE_NAME}\",
+                          \"subdomain\": \"${HOST_PORT}\",
+                          \"isBaseDomain\": false,
+                          \"siteId\": ${NUMERIC_SITE_ID},
+                          \"http\": true,
+                          \"protocol\": \"tcp\",
+                          \"domainId\": \"${DOMAIN_ID}\"
+                      }")
+
+                  HTTP_STATUS=$(echo "$HTTP_RESPONSE" | tr -d '\n' | sed -E 's/.*HTTP_STATUS:([0-9]{3})$/\1/')
+                  HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed -E 's/HTTP_STATUS\:[0-9]{3}$//')
+
+                  if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
+                      RESOURCE_ID=$(echo "$HTTP_BODY" | grep -o '"resourceId":[0-9]*' | cut -d':' -f2)
+                      
+                      # Create target
+                      TARGET_RESPONSE=$(curl -s -k -w "HTTP_STATUS:%{http_code}" \
+                          -X PUT \
+                          -H "Content-Type: application/json" \
+                          -H "Authorization: Bearer ${{ secrets.PANGOLIN_API_TOKEN }}" \
+                          "${{ secrets.PANGOLIN_URL }}/v1/resource/${RESOURCE_ID}/target" \
+                          -d "{
+                              \"ip\": \"localhost\",
+                              \"method\": \"http\",
+                              \"port\": ${HOST_PORT},
+                              \"enabled\": true
+                          }")
+                      
+                      TARGET_STATUS=$(echo "$TARGET_RESPONSE" | tr -d '\n' | sed -E 's/.*HTTP_STATUS:([0-9]{3})$/\1/')
+                      
+                      if [ "$TARGET_STATUS" -eq 200 ] || [ "$TARGET_STATUS" -eq 201 ]; then
+                          echo "✅ DNS mapping created: https://${HOST_PORT}.${{ secrets.PANGOLIN_DOMAIN_ID }}"
+                      else
+                          echo "⚠️ Resource created but target creation failed"
+                      fi
+                  elif [ "$HTTP_STATUS" -eq 409 ]; then
+                      echo "⚠️ DNS mapping already exists for ${HOST_PORT}.${{ secrets.PANGOLIN_DOMAIN_ID }}"
+                      echo "::warning::Port mapping for ${HOST_PORT}.${{ secrets.PANGOLIN_DOMAIN_ID }} already exists - using existing resource"
+                  else
+                      echo "❌ Failed to create DNS mapping (HTTP ${HTTP_STATUS})"
+                      exit 1
+                  fi
+
+            - name: Deployment summary
+              run: |
+                  BRANCH_NAME="${{ inputs.branch || github.head_ref || github.ref_name }}"
+
+                  echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Branch**: ${BRANCH_NAME}" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Image**: ${IMAGE_URL}" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Status**: ✅ Deployed" >> $GITHUB_STEP_SUMMARY
+
+                  if [ -f "deployment-info.json" ]; then
+                      SUCCESS=$(cat deployment-info.json | jq -r '.success' 2>/dev/null || echo "false")
+                      
+                      if [ "$SUCCESS" = "true" ]; then
+                          HOST_PORT=$(cat deployment-info.json | jq -r '.hostPort' 2>/dev/null)
+                          RESOURCE_NAME=$(cat deployment-info.json | jq -r '.resourceName' 2>/dev/null)
+                          
+                          echo "- **Port**: ${HOST_PORT}" >> $GITHUB_STEP_SUMMARY
+                          echo "- **Resource**: ${RESOURCE_NAME}" >> $GITHUB_STEP_SUMMARY
+                          echo "- **URL**: [https://${HOST_PORT}.${{ secrets.PANGOLIN_DOMAIN_ID }}](https://${HOST_PORT}.${{ secrets.PANGOLIN_DOMAIN_ID }})" >> $GITHUB_STEP_SUMMARY
+                      else
+                          ERROR_MSG=$(cat deployment-info.json | jq -r '.error' 2>/dev/null || echo "Unknown error")
+                          echo "- **Status**: ❌ Failed" >> $GITHUB_STEP_SUMMARY
+                          echo "- **Error**: ${ERROR_MSG}" >> $GITHUB_STEP_SUMMARY
+                      fi
+                  else
+                      echo "- **Status**: ❌ No deployment info found" >> $GITHUB_STEP_SUMMARY
+                  fi
+
+            - name: Update GitHub deployment status
+              uses: actions/github-script@v7
+              if: always()
+              with:
+                  script: |
+                      const fs = require('fs');
+                      let deploymentStatus = 'failure';
+                      let environmentUrl = '';
+                      let description = 'Deployment failed';
+
+                      if (fs.existsSync('deployment-info.json')) {
+                        try {
+                          const deploymentInfo = JSON.parse(fs.readFileSync('deployment-info.json', 'utf8'));
+                          if (deploymentInfo.success) {
+                            deploymentStatus = 'success';
+                            environmentUrl = `https://${deploymentInfo.hostPort}.${{ secrets.PANGOLIN_DOMAIN_ID }}`;
+                            description = `Deployed successfully at https://${deploymentInfo.hostPort}.${{ secrets.PANGOLIN_DOMAIN_ID }}`;
+                          } else {
+                            description = `Deployment failed: ${deploymentInfo.error || 'Unknown error'}`;
+                          }
+                        } catch (error) {
+                          description = 'Deployment failed: Could not read deployment info';
+                        }
+                      }
+
+                      const deploymentId = '${{ steps.deployment.outputs.result }}';
+                      if (deploymentId && deploymentId !== 'undefined') {
+                        await github.rest.repos.createDeploymentStatus({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          deployment_id: deploymentId,
+                          state: deploymentStatus,
+                          environment_url: environmentUrl,
+                          description: description
+                        });
+                        console.log(`Deployment status updated to: ${deploymentStatus}`);
+                      }
