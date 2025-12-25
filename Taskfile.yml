@@ -1,0 +1,47 @@
+# https://taskfile.dev
+
+version: '3'
+
+dotenv: ['.env']
+
+tasks:
+    deploy:
+        desc: Deploy to Komodo (no build, uses existing image)
+        cmds:
+            - node deploy.mjs {{.CLI_ARGS}}
+
+    build-and-deploy:
+        desc: Build Docker image and deploy to Komodo
+        cmds:
+            - node deploy.mjs {{.CLI_ARGS}} --build
+
+    deploy:dev:
+        desc: Deploy dev branch (no build)
+        cmds:
+            - node deploy.mjs dev
+
+    deploy:main:
+        desc: Deploy main branch (no build)
+        cmds:
+            - node deploy.mjs main
+
+    build-and-deploy:dev:
+        desc: Build and deploy dev branch
+        cmds:
+            - node deploy.mjs dev --build
+
+    build-and-deploy:main:
+        desc: Build and deploy main branch
+        cmds:
+            - node deploy.mjs main --build
+
+    install:
+        desc: Install npm dependencies
+        cmds:
+            - npm install
+
+    komodo-cli:build:
+        desc: Build and push the komodo-cli Docker image
+        cmds:
+            - docker build -f docker/komodo-cli.Dockerfile -t ${DOCKER_REGISTRY}/komodo-cli:latest .
+            - docker push ${DOCKER_REGISTRY}/komodo-cli:latest
