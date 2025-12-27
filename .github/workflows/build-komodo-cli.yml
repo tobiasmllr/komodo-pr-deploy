@@ -30,7 +30,7 @@ jobs:
 
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
 
             - name: Trigger Komodo build for komodo-cli
               if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.trigger_build)
