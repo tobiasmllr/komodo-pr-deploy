@@ -21,37 +21,47 @@ jobs:
         environment: komodo
 
         steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
-
-            - name: Log in to Container Registry
-              uses: docker/login-action@v2
-              with:
-                  registry: ${{ secrets.DOCKER_REGISTRY }}
-                  username: ${{ secrets.DOCKER_USERNAME }}
-                  password: ${{ secrets.DOCKER_PASSWORD }}
-
-            - name: Build and push komodo-cli image
+            - name: Trigger Komodo build for komodo-cli
+              if: github.event_name != 'pull_request'
+              env:
+                  KOMODO_URL: ${{ secrets.KOMODO_URL }}
+                  KOMODO_API_KEY: ${{ secrets.KOMODO_API_KEY }}
+                  KOMODO_API_SECRET: ${{ secrets.KOMODO_API_SECRET }}
+                  KOMODO_SERVER_ID_BUILD: ${{ secrets.KOMODO_SERVER_ID_BUILD }}
+                  DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
               run: |
-                  docker build \
-                      -f docker/komodo-cli.Dockerfile \
-                      -t ${{ secrets.DOCKER_REGISTRY }}/komodo-cli:latest \
-                      .
+                  echo "🔨 Triggering Komodo to build komodo-cli image..."
 
-                  # Only push on main branch, not on PRs
-                  if [ "${{ github.event_name }}" != "pull_request" ]; then
-                      docker push ${{ secrets.DOCKER_REGISTRY }}/komodo-cli:latest
-                      echo "✅ Pushed komodo-cli:latest"
-                  else
-                      echo "ℹ️ PR build - skipping push"
+                  # Trigger the build (assumes build already exists in Komodo)
+                  echo "🚀 Starting build..."
+                  BUILD_RESPONSE=$(curl -s -X POST \
+                      -H "Content-Type: application/json" \
+                      -H "X-API-KEY: ${KOMODO_API_KEY}" \
+                      -H "X-API-SECRET: ${KOMODO_API_SECRET}" \
+                      "${KOMODO_URL}/execute/RunBuild" \
+                      -d '{"build": "komodo-cli-build"}')
+
+                  echo "Build trigger response: $BUILD_RESPONSE"
+
+                  if echo "$BUILD_RESPONSE" | grep -q "error"; then
+                      echo "❌ Build trigger failed"
+                      exit 1
                   fi
+
+                  echo "✅ Build triggered on Komodo"
+
+            - name: PR validation note
+              if: github.event_name == 'pull_request'
+              run: |
+                  echo "ℹ️ PR detected - skipping build trigger"
+                  echo "The Dockerfile and related files will be validated when merged to main"
 
             - name: Build summary
               run: |
                   echo "## 🐳 komodo-cli Build" >> $GITHUB_STEP_SUMMARY
                   echo "- **Image**: ${{ secrets.DOCKER_REGISTRY }}/komodo-cli:latest" >> $GITHUB_STEP_SUMMARY
                   if [ "${{ github.event_name }}" != "pull_request" ]; then
-                      echo "- **Status**: ✅ Built and pushed" >> $GITHUB_STEP_SUMMARY
+                      echo "- **Status**: ✅ Build triggered on Komodo" >> $GITHUB_STEP_SUMMARY
                   else
-                      echo "- **Status**: ✅ Built (PR - not pushed)" >> $GITHUB_STEP_SUMMARY
+                      echo "- **Status**: ℹ️ PR - build skipped (will trigger on merge)" >> $GITHUB_STEP_SUMMARY
                   fi

@@ -41,7 +41,12 @@ tasks:
             - npm install
 
     komodo-cli:build:
-        desc: Build and push the komodo-cli Docker image
+        desc: Build and push the komodo-cli Docker image locally
         cmds:
             - docker build -f docker/komodo-cli.Dockerfile -t ${DOCKER_REGISTRY}/komodo-cli:latest .
             - docker push ${DOCKER_REGISTRY}/komodo-cli:latest
+
+    komodo-cli:build-via-komodo:
+        desc: Trigger Komodo to build komodo-cli image
+        cmds:
+            - node deploy.mjs --build-komodo-cli
