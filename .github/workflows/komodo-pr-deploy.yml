@@ -19,7 +19,9 @@ permissions:
 
 jobs:
     deploy:
-        if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.ref != 'main' && github.event.pull_request.head.ref != 'dev') }}
+        # Skip for komodo-pr-deploy repo itself (this is a tool repo, not an app to deploy)
+        # Also skip PRs from main/dev branches
+        if: ${{ github.repository != 'tobiasmllr/komodo-pr-deploy' && (github.event_name != 'pull_request' || (github.event.pull_request.head.ref != 'main' && github.event.pull_request.head.ref != 'dev')) }}
         runs-on: ubuntu-latest
         environment: komodo
 
