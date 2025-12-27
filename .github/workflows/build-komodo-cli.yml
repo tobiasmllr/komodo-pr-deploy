@@ -7,12 +7,14 @@ on:
             - 'docker/komodo-cli.Dockerfile'
             - 'deploy.mjs'
             - 'package.json'
+            - '.github/workflows/build-komodo-cli.yml'
     pull_request:
         branches: [main]
         paths:
             - 'docker/komodo-cli.Dockerfile'
             - 'deploy.mjs'
             - 'package.json'
+            - '.github/workflows/**'
     workflow_dispatch:
         inputs:
             trigger_build:
