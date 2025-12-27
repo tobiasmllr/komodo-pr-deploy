@@ -14,9 +14,17 @@ on:
             - 'deploy.mjs'
             - 'package.json'
     workflow_dispatch:
+        inputs:
+            trigger_build:
+                description: 'Actually trigger the Komodo build'
+                required: true
+                default: true
+                type: boolean
 
 jobs:
     build:
+        # Only run on the komodo-pr-deploy repo itself
+        if: github.repository == 'tobiasmllr/komodo-pr-deploy'
         runs-on: ubuntu-latest
         environment: komodo
 
@@ -25,7 +33,7 @@ jobs:
               uses: actions/checkout@v4
 
             - name: Trigger Komodo build for komodo-cli
-              if: github.event_name != 'pull_request'
+              if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.trigger_build)
               env:
                   KOMODO_URL: ${{ secrets.KOMODO_URL }}
                   KOMODO_API_KEY: ${{ secrets.KOMODO_API_KEY }}
@@ -93,7 +101,7 @@ jobs:
                   exit 1
 
             - name: PR validation note
-              if: github.event_name == 'pull_request'
+              if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.trigger_build)
               run: |
                   echo "ℹ️ PR detected - skipping build trigger"
                   echo "The Dockerfile and related files will be validated when merged to main"
@@ -105,8 +113,8 @@ jobs:
               run: |
                   echo "## 🐳 komodo-cli Build" >> $GITHUB_STEP_SUMMARY
                   echo "- **Image**: ${DOCKER_REGISTRY}/mop/komodo-cli:latest" >> $GITHUB_STEP_SUMMARY
-                  if [ "${{ github.event_name }}" != "pull_request" ]; then
-                      echo "- **Status**: Build triggered on Komodo" >> $GITHUB_STEP_SUMMARY
+                  if [ "${{ github.event_name }}" = "push" ] || ([ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.trigger_build }}" = "true" ]); then
+                      echo "- **Status**: ✅ Build triggered on Komodo" >> $GITHUB_STEP_SUMMARY
                   else
-                      echo "- **Status**: ℹ️ PR - build skipped (will trigger on merge)" >> $GITHUB_STEP_SUMMARY
+                      echo "- **Status**: ℹ️ Build skipped (PR or manual skip)" >> $GITHUB_STEP_SUMMARY
                   fi
