@@ -33,7 +33,11 @@ jobs:
               uses: actions/checkout@v4
 
             - name: Trigger Komodo build for komodo-cli
-              if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.trigger_build)
+              # Auto-trigger for: push to main, manual dispatch with trigger_build, or Renovate PRs
+              if: |
+                  github.event_name == 'push' ||
+                  (github.event_name == 'workflow_dispatch' && inputs.trigger_build) ||
+                  (github.event_name == 'pull_request' && startsWith(github.head_ref, 'renovate/'))
               env:
                   KOMODO_URL: ${{ secrets.KOMODO_URL }}
                   KOMODO_API_KEY: ${{ secrets.KOMODO_API_KEY }}
@@ -101,9 +105,11 @@ jobs:
                   exit 1
 
             - name: PR validation note
-              if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.trigger_build)
+              if: |
+                  (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'renovate/')) ||
+                  (github.event_name == 'workflow_dispatch' && !inputs.trigger_build)
               run: |
-                  echo "ℹ️ PR detected - skipping build trigger"
+                  echo "ℹ️ Non-Renovate PR detected - skipping build trigger"
                   echo "The Dockerfile and related files will be validated when merged to main"
 
             - name: Build summary
@@ -113,8 +119,7 @@ jobs:
               run: |
                   echo "## 🐳 komodo-cli Build" >> $GITHUB_STEP_SUMMARY
                   echo "- **Image**: ${DOCKER_REGISTRY}/mop/komodo-cli:latest" >> $GITHUB_STEP_SUMMARY
-                  if [ "${{ github.event_name }}" = "push" ] || ([ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.trigger_build }}" = "true" ]); then
-                      echo "- **Status**: ✅ Build triggered on Komodo" >> $GITHUB_STEP_SUMMARY
-                  else
-                      echo "- **Status**: ℹ️ Build skipped (PR or manual skip)" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+                  if [[ "${{ github.head_ref }}" == renovate/* ]]; then
+                      echo "- **Source**: Renovate PR" >> $GITHUB_STEP_SUMMARY
                   fi
