@@ -32,7 +32,7 @@ jobs:
                   ref: ${{ inputs.branch || github.head_ref || github.ref_name }}
 
             - name: Create GitHub deployment
-              uses: actions/github-script@v7
+              uses: actions/github-script@v8
               id: deployment
               with:
                   script: |
@@ -219,7 +219,7 @@ jobs:
                   fi
 
             - name: Update GitHub deployment status
-              uses: actions/github-script@v7
+              uses: actions/github-script@v8
               if: always()
               env:
                   PANGOLIN_DOMAIN_ID: ${{ secrets.PANGOLIN_DOMAIN_ID }}
