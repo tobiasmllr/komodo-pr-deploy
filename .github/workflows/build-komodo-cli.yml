@@ -21,6 +21,9 @@ jobs:
         environment: komodo
 
         steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
             - name: Trigger Komodo build for komodo-cli
               if: github.event_name != 'pull_request'
               env:
@@ -30,18 +33,23 @@ jobs:
               run: |
                   echo "🔨 Triggering Komodo to build komodo-cli image..."
 
+                  # Use the build name as configured in Komodo
+                  # (Check your Komodo UI for the exact build name)
+                  BUILD_NAME="komodo-cli"
+
                   # Trigger the build
-                  echo "🚀 Starting build..."
+                  echo "🚀 Starting build: ${BUILD_NAME}..."
                   BUILD_RESPONSE=$(curl -s -X POST \
                       -H "Content-Type: application/json" \
                       -H "X-API-KEY: ${KOMODO_API_KEY}" \
                       -H "X-API-SECRET: ${KOMODO_API_SECRET}" \
                       "${KOMODO_URL}/execute/RunBuild" \
-                      -d '{"build": "komodo-cli-build"}')
+                      -d "{\"build\": \"${BUILD_NAME}\"}")
 
                   echo "Build trigger response: $BUILD_RESPONSE"
 
-                  if echo "$BUILD_RESPONSE" | grep -q '"error"'; then
+                  # Check for errors in response
+                  if echo "$BUILD_RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
                       echo "❌ Build trigger failed: $BUILD_RESPONSE"
                       exit 1
                   fi
@@ -56,6 +64,8 @@ jobs:
                       ATTEMPT=$((ATTEMPT + 1))
                       echo "📋 Checking build status (attempt ${ATTEMPT}/${MAX_ATTEMPTS})..."
 
+                      sleep 30
+
                       STATUS_RESPONSE=$(curl -s -X POST \
                           -H "Content-Type: application/json" \
                           -H "X-API-KEY: ${KOMODO_API_KEY}" \
@@ -63,21 +73,20 @@ jobs:
                           "${KOMODO_URL}/read/ListBuilds" \
                           -d '{}')
 
-                      # Extract state for komodo-cli-build
-                      BUILD_STATE=$(echo "$STATUS_RESPONSE" | jq -r '.[] | select(.name == "komodo-cli-build") | .info.state // "unknown"')
+                      # Extract state for the build
+                      BUILD_STATE=$(echo "$STATUS_RESPONSE" | jq -r ".[] | select(.name == \"${BUILD_NAME}\") | .info.state // \"unknown\"")
 
                       echo "📊 Build state: $BUILD_STATE"
 
                       if [ "$BUILD_STATE" = "Ok" ] || [ "$BUILD_STATE" = "complete" ] || [ "$BUILD_STATE" = "success" ]; then
                           echo "✅ Build completed successfully!"
                           exit 0
-                      elif [ "$BUILD_STATE" = "failed" ] || [ "$BUILD_STATE" = "error" ]; then
+                      elif [ "$BUILD_STATE" = "failed" ] || [ "$BUILD_STATE" = "error" ] || [ "$BUILD_STATE" = "Failed" ]; then
                           echo "❌ Build failed with state: $BUILD_STATE"
                           exit 1
                       fi
 
-                      echo "⏳ Build still running... waiting 30 seconds"
-                      sleep 30
+                      echo "⏳ Build still running..."
                   done
 
                   echo "❌ Build did not complete within $((MAX_ATTEMPTS * 30 / 60)) minutes"
@@ -90,11 +99,14 @@ jobs:
                   echo "The Dockerfile and related files will be validated when merged to main"
 
             - name: Build summary
+              if: always()
+              env:
+                  DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
               run: |
                   echo "## 🐳 komodo-cli Build" >> $GITHUB_STEP_SUMMARY
-                  echo "- **Image**: ${{ secrets.DOCKER_REGISTRY }}/komodo-cli:latest" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Image**: ${DOCKER_REGISTRY}/mop/komodo-cli:latest" >> $GITHUB_STEP_SUMMARY
                   if [ "${{ github.event_name }}" != "pull_request" ]; then
-                      echo "- **Status**: ✅ Build triggered on Komodo" >> $GITHUB_STEP_SUMMARY
+                      echo "- **Status**: Build triggered on Komodo" >> $GITHUB_STEP_SUMMARY
                   else
                       echo "- **Status**: ℹ️ PR - build skipped (will trigger on merge)" >> $GITHUB_STEP_SUMMARY
                   fi
