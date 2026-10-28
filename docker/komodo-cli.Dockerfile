@@ -1,5 +1,5 @@
 # Komodo CLI Docker Image
-FROM node:24-alpine
+FROM node:26-alpine
 
 # Set working directory
 WORKDIR /app
